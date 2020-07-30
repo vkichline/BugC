@@ -41,7 +41,7 @@ void print_mac_address(uint16_t color) {
 
 // Callback executed by ESP-Now when data is sent
 //
-void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+void on_data_sent(const uint8_t *mac_addr, esp_now_send_status_t status) {
   Serial.printf("Last Packet Send Status:\t%s\n", (status == ESP_NOW_SEND_SUCCESS) ? "Delivery Success" : "Delivery Fail");
 }
 
@@ -51,7 +51,7 @@ void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
 // and red if backward. The speed is drawn closest to
 // the motor it describes.
 //
-void DisplaySpeed(uint8_t motor, int8_t speed) {
+void display_speed(uint8_t motor, int8_t speed) {
   if(0 == speed) M5.Lcd.setTextColor(TFT_BLUE);
   else M5.Lcd.setTextColor(0 < speed ? TFT_GREEN : TFT_RED);
   switch(motor) {
@@ -74,7 +74,7 @@ void DisplaySpeed(uint8_t motor, int8_t speed) {
 // Callback function that will be executed by ESP-Now when data is received.
 // Move the data into datagram storage and set data_received.
 //
-void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
+void on_data_received(const uint8_t * mac, const uint8_t *incomingData, int len) {
   data_valid = (sizeof(struct_message) == len);   // currently, validated by message size.
   if(data_valid) {
     data_received = true;
@@ -96,24 +96,24 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
 
 // Send a status response back to the BugController to let it know how the last message was handled.
 //
-void SendResponse(response_status status) {
+void send_response(response_status status) {
   response.status = status;
   esp_err_t result = esp_now_send(conrollerAddress, (uint8_t *) &response, sizeof(struct_response));
-  Serial.printf("SendResponse result = %d\n", result);
+  Serial.printf("send_response result = %d\n", result);
 }
 
 
 // Set up ESP-Now. Return true if successful.
 //
-bool InitializeEspNow() {
+bool initialize_esp_now() {
   esp_now_peer_info_t peerInfo;
   WiFi.mode(WIFI_STA);
   if(ESP_OK != esp_now_init()) {
     Serial.println("Error initializing ESP-NOW");
     return false;
   }
-  esp_now_register_send_cb(OnDataSent);
-  esp_now_register_recv_cb(OnDataRecv);
+  esp_now_register_send_cb(on_data_sent);
+  esp_now_register_recv_cb(on_data_received);
 
   memcpy(peerInfo.peer_addr, conrollerAddress, 6);
   peerInfo.channel = 0;
@@ -129,24 +129,24 @@ bool InitializeEspNow() {
 // See if valid data has been received, and if so set all data outputs (2 NeoPixels and 4 speeds)
 // Send a response indicating whether or not the data received was valid.
 //
-bool TestAndHandleData() {
+bool test_and_handle_incoming_data() {
   if(data_received) {
     data_received = false;                                      // clear the flag for next command
     if(data_valid) {
-      SendResponse(RESP_NOERR);                                 // let controller know that we accept the data
+      send_response(RESP_NOERR);                                // let controller know that we accept the data
       BugCSetColor(datagram.color_left, datagram.color_right);  // set the NeoPixels on the front of the BugC
       BugCSetAllSpeed(datagram.speed_0, datagram.speed_1, datagram.speed_2, datagram.speed_3);
-      DisplaySpeed(0, datagram.speed_0);                        // Display the speed of all four motors
-      DisplaySpeed(1, datagram.speed_1);                        // close to the motors themselves
-      DisplaySpeed(2, datagram.speed_2);                        // (because layout and connection are fixed.)
-      DisplaySpeed(3, datagram.speed_3);                        // This assumes setRotation(1)
+      display_speed(0, datagram.speed_0);                       // Display the speed of all four motors
+      display_speed(1, datagram.speed_1);                       // close to the motors themselves
+      display_speed(2, datagram.speed_2);                       // (because layout and connection are fixed.)
+      display_speed(3, datagram.speed_3);                       // This assumes setRotation(1)
       Serial.printf("color_left = %d\tcolor_right = %d\n", datagram.color_left, datagram.color_right);
       Serial.printf("speed_0    = %d\tspeed_1     = %d\n", datagram.speed_0, datagram.speed_1);
       Serial.printf("speed_2    = %d\tspeed_3     = %d\n", datagram.speed_2, datagram.speed_3);
       return true;
     }
     else {
-      SendResponse(RESP_ERROR);                                 // let controller know that we reject the data
+      send_response(RESP_ERROR);                                // let controller know that we reject the data
       return false;
     }
   }
@@ -157,7 +157,7 @@ bool TestAndHandleData() {
 // See if enough time has elapsed to update the battery voltage display.
 // If the voltage is OK, display in green. If dangerously low, display in red.
 //
-void testAndDisplayBatteryVoltage() {
+void test_and_display_battery_voltage() {
   if(lastBatteryUpdate + BATTERY_UPDATE_DELAY < millis()) {
     float vBat = M5.Axp.GetBatVoltage();
     vBat = int(vBat * 10.0) / 10.0;
@@ -177,13 +177,13 @@ void setup() {
   M5.Axp.SetChargeCurrent(CURRENT_360MA); // Needed for charging the 750 mAh battery on the BugC
   M5.Lcd.setRotation(1);
   print_mac_address(TFT_RED);             // Display address for convenience. Red indicates no connection yet.
-  InitializeEspNow();                     // Get communications working
+  initialize_esp_now();                   // Get communications working
 }
 
 
 // Standard Arduino loop function, called continuously after setup.
 //
 void loop() {
-  TestAndHandleData();
-  testAndDisplayBatteryVoltage();
+  test_and_handle_incoming_data();
+  test_and_display_battery_voltage();
 }
