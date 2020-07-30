@@ -37,7 +37,8 @@ void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
 
 // show the motor speed in the appropriate position
 void DisplaySpeed(uint8_t motor, int8_t speed) {
-  M5.Lcd.setTextColor(0 < speed ? TFT_GREEN : TFT_RED);
+  if(0 == speed) M5.Lcd.setTextColor(TFT_BLUE);
+  else M5.Lcd.setTextColor(0 < speed ? TFT_GREEN : TFT_RED);
   switch(motor) {
     case 0: M5.Lcd.fillRect(0, 64, 50, 16, TFT_BLACK);
             M5.Lcd.drawCentreString(String(speed),  25, 64, 2);
