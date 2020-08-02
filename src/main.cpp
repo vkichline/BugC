@@ -17,6 +17,7 @@
 
 #define BATTERY_UPDATE_DELAY  30000
 #define LOW_BATTERY_VOLTAGE   3.7
+#define LED_PIN               10
 
 struct_message  datagram;
 struct_response response;
@@ -75,8 +76,12 @@ void display_speed(uint8_t motor, int8_t speed) {
 // Move the data into datagram storage and set data_received.
 //
 void on_data_received(const uint8_t * mac, const uint8_t *incomingData, int len) {
+  Serial.println("Incoming packet received.");
   data_valid = (sizeof(struct_message) == len);   // currently, validated by message size.
+  if(data_valid) data_valid = COMMUNICATIONS_SIGNATURE == ((struct_message*)incomingData)->signature &&
+                              COMMUNICATIONS_VERSION   == ((struct_message*)incomingData)->version;
   if(data_valid) {
+    Serial.println("Incoming packet validated.");
     data_received = true;
     if(!connected) {
       connected = true;
@@ -90,6 +95,13 @@ void on_data_received(const uint8_t * mac, const uint8_t *incomingData, int len)
     Serial.printf("speed_3: %d\n",      datagram.speed_0);
     Serial.printf("color_left: %d\n",   datagram.color_left);
     Serial.printf("color_right: %d\n",  datagram.color_right);
+  }
+  else {
+    Serial.print("COMM FAILURE: Incoming packet rejected. ");
+    if(sizeof(struct_message) != len) Serial.printf("Expected size: %d. Actual size: %d\n", sizeof(struct_message), len);
+    else if(COMMUNICATIONS_SIGNATURE != ((struct_message*)incomingData)->signature) Serial.printf("Expected signature: %lu. Actual signature: %lu\n", COMMUNICATIONS_SIGNATURE, ((struct_message*)incomingData)->signature);
+    else if(COMMUNICATIONS_VERSION != ((struct_message*)incomingData)->version) Serial.printf("Expected version: %d. Actual version: %d\n", COMMUNICATIONS_VERSION, ((struct_message*)incomingData)->version);
+    else Serial.println("Coding error.\n");
   }
 }
 
@@ -136,6 +148,7 @@ bool test_and_handle_incoming_data() {
       send_response(RESP_NOERR);                                // let controller know that we accept the data
       BugCSetColor(datagram.color_left, datagram.color_right);  // set the NeoPixels on the front of the BugC
       BugCSetAllSpeed(datagram.speed_0, datagram.speed_1, datagram.speed_2, datagram.speed_3);
+      digitalWrite(LED_PIN, !datagram.button);                  // Turn on the LED if button is True
       display_speed(0, datagram.speed_0);                       // Display the speed of all four motors
       display_speed(1, datagram.speed_1);                       // close to the motors themselves
       display_speed(2, datagram.speed_2);                       // (because layout and connection are fixed.)
@@ -143,6 +156,7 @@ bool test_and_handle_incoming_data() {
       Serial.printf("color_left = %d\tcolor_right = %d\n", datagram.color_left, datagram.color_right);
       Serial.printf("speed_0    = %d\tspeed_1     = %d\n", datagram.speed_0, datagram.speed_1);
       Serial.printf("speed_2    = %d\tspeed_3     = %d\n", datagram.speed_2, datagram.speed_3);
+      Serial.printf("button     = %s\n", datagram.button ? "true" : "false");
       return true;
     }
     else {
@@ -169,10 +183,25 @@ void test_and_display_battery_voltage() {
 }
 
 
+// Stop the robot, turn off motors, turn off lights, display full stop.
+//
+void come_to_halt() {
+  BugCSetColor(0, 0);           // Turn off the NeoPixels on the front of the BugC
+  BugCSetAllSpeed(0, 0, 0, 0);  // Stop the motors
+  digitalWrite(LED_PIN, true);  // turn off the red LED
+  display_speed(0, 0);          // Display the speed of all four motors
+  display_speed(1, 0);
+  display_speed(2, 0);
+  display_speed(3, 0);
+}
+
+
 // Standard Arduino setup function, called once before start of program.
 //
 void setup() {
   M5.begin();                             // Gets the M5StickC library initialized
+  pinMode(LED_PIN, OUTPUT);               // Enables the internal LED as an output
+  digitalWrite(LED_PIN, true);            // Turn LED off
   Wire.begin(0, 26, 400000);              // Need Wire to communicate with BugC
   M5.Axp.SetChargeCurrent(CURRENT_360MA); // Needed for charging the 750 mAh battery on the BugC
   M5.Lcd.setRotation(1);
@@ -184,6 +213,8 @@ void setup() {
 // Standard Arduino loop function, called continuously after setup.
 //
 void loop() {
-  test_and_handle_incoming_data();
-  test_and_display_battery_voltage();
+  M5.update();                            // So M5.BtnA.isPressed() works
+  if(M5.BtnA.isPressed()) come_to_halt(); // In case the transmitter dies, pressing the button turns everything off.
+  test_and_handle_incoming_data();        // Handle ESP-Now communications
+  test_and_display_battery_voltage();     // Display battery voltage on screen
 }
