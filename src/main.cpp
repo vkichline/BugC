@@ -1,7 +1,20 @@
-// BugC Robot control with an M5StickC using ESP-Now protocol
-// Pairs with the companion project BugController
+// BugNow Robot with an M5StickC using ESP-Now protocol
+// Pairs with the companion project BugNowController
 // By Van Kichline
 // In the year of the plague
+//
+// Ver 2: Automatic discovery. Secrets file is eliminated.
+// Controller:
+// When turned on, select a channel: 1 - 14. Default is random.
+// Add a broadcast peer and broadcast a discovery packet until ACK received.
+// Remove broadcast peer.
+// Add the responder as a peer.
+// Go into controller mode.
+// Receiver:
+// When turned on, select a channel: 1 - 14. Choose the same one as the Controller.
+// Add a broadcast peer and listen for discovery packet until detected. Send ACK.
+// Remove broadcast peer.
+// Go into receiver mode.
 
 
 #include <esp_now.h>
@@ -9,26 +22,6 @@
 #include "M5StickC.h"
 #include "bugC.h"
 #include "BugCommunications.h"
-
-// The motors of the BugC are arrainged like:
-//   1      3
-//   0      2
-// ...where left is the front of the BugC
-
-// Ver 2: Automatic discovery. Secrets file is eliminated.
-// Controller:
-// When turned on, select a channel: 1 - 14. Default is random.
-// Set a special callback function to handle the pairing
-// Add a broadcast peer and broadcast a controller frame until ACK received.
-// Change the callback routine to operational callback
-// Remove broadcast peer.
-// Add the responder as a peer.
-// Go into controller mode.
-// Obeyer:
-// When turned on, select a channel: 1 - 14. Choose the same one as the Controller.
-// Add a broadcast peer and listen for controller frame until detected. Send ACK.
-// Remove broadcast peer.
-// Go into obeyer mode.
 
 #define LED_PIN     10
 #define BG_COLOR    NAVY
@@ -49,60 +42,14 @@ uint8_t             broadcastAddress[]    = BROADCAST_MAC_ADDRESS;
 uint8_t             controllerAddress[6]  = { 0 };
 
 
-// Display the mac address on the screen in a diagnostic color
-// Red indicates no ESP-Now connection, Green indicates connection established.
-//
-void print_mac_address(uint16_t color) {
-  M5.Lcd.setTextColor(color);
-  M5.Lcd.drawCentreString("BugNow", 80, 0, 2);
-  String mac = WiFi.macAddress();
-  mac.replace(":", " ");
-  mac = String("R ") + mac;
-  M5.Lcd.drawCentreString(mac, 80, 22, 2);
-  if(connected) {
-    char  buffer[32];
-    sprintf(buffer, "C %02X %02X %02X %02X %02X %02X", controllerAddress[0], controllerAddress[1],
-        controllerAddress[2], controllerAddress[3], controllerAddress[4], controllerAddress[5]);
-    M5.Lcd.drawCentreString(buffer, 80, 40, 2);
-    String chan = "Chan " + String(channel);
-    M5.Lcd.drawCentreString(chan, 80, 60, 2);
-  }
-}
-
-
-// Callback executed by ESP-Now when data is sent
+// ESP-Now callback function that will be executed when data is sent
 //
 void on_data_sent(const uint8_t *mac_addr, esp_now_send_status_t status) {
   Serial.printf("Last Packet Send Status:\t%s\n", (status == ESP_NOW_SEND_SUCCESS) ? "Delivery Success" : "Delivery Fail");
 }
 
 
-// Display the motor speed in the appropriate position
-// Speed is drawn in blue if stopped, green if forward
-// and red if backward. The speed is drawn closest to
-// the motor it describes.
-//
-void display_speed(uint8_t motor, int8_t speed) {
-  if(0 == speed) M5.Lcd.setTextColor(TFT_BLUE);
-  else M5.Lcd.setTextColor(0 < speed ? TFT_GREEN : TFT_RED);
-  switch(motor) {
-    case 0: M5.Lcd.fillRect(0, 64, 50, 16, TFT_BLACK);
-            M5.Lcd.drawCentreString(String(speed),  25, 64, 2);
-            break;
-    case 1: M5.Lcd.fillRect(0, 0, 50, 16, TFT_BLACK);
-            M5.Lcd.drawCentreString(String(speed),  25,  0, 2);
-            break;
-    case 2: M5.Lcd.fillRect(110, 64, 50, 16, TFT_BLACK);
-            M5.Lcd.drawCentreString(String(speed), 135, 64, 2);
-            break;
-    case 3: M5.Lcd.fillRect(110, 0, 50, 16, TFT_BLACK);
-            M5.Lcd.drawCentreString(String(speed), 135,  0, 2);
-            break;
-  }
-}
-
-
-// Callback function that will be executed by ESP-Now when data is received.
+// ESP-Now callback function that will be executed when data is received
 // This is on a high-priority system thread. Do as little as possible.
 //
 void on_data_received(const uint8_t * mac, const uint8_t *incomingData, int len) {
@@ -116,15 +63,6 @@ void on_data_received(const uint8_t * mac, const uint8_t *incomingData, int len)
   memcpy(&responseAddress, mac, 6);
   response_len  = len;
   data_ready    = true;
-}
-
-
-// Send a status response back to the BugController to let it know how the last message was handled.
-//
-void send_response(response_status status) {
-  response.status = status;
-  esp_err_t result = esp_now_send(controllerAddress, (uint8_t *) &response, sizeof(struct_response));
-  Serial.printf("send_response result = %d\n", result);
 }
 
 
@@ -153,6 +91,88 @@ bool initialize_esp_now(uint8_t chan, uint8_t* mac_address) {
     return false;
   }
   return true;
+}
+
+
+// Send a status response back to the BugController to let it know how the last message was handled.
+//
+void send_response(response_status status) {
+  response.status = status;
+  esp_err_t result = esp_now_send(controllerAddress, (uint8_t *) &response, sizeof(struct_response));
+  Serial.printf("send_response result = %d\n", result);
+}
+
+
+// When waiting for paring, process incoming discovery packet. If valid, remove broadcast peer
+// and reinitialize with new peer.
+//
+void process_pairing_response() {
+  data_ready = false;
+  data_valid = (sizeof(discovery_message) == response_len);  // In discovery phase until connected.
+  if(data_valid) data_valid = COMMUNICATIONS_SIGNATURE == response.signature &&
+                              COMMUNICATIONS_VERSION   == response.version;
+  if(data_valid) {
+    Serial.println("Incoming discovery packet validated.");
+    connected = true;
+    esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *) &response, sizeof(struct_response));
+    Serial.printf("pairing send_response result = %d\n", result);
+    memcpy(controllerAddress, responseAddress, 6);    // This is who we will be talking to.
+    if (ESP_OK == esp_now_del_peer(broadcastAddress)) {   // We are finished with discovery
+      Serial.println("Deleted broadcast peer");
+    }
+    else {
+      Serial.println("Failed to delete broadcast peer");
+      return;
+    }
+    // Reinitialize WiFi with the new channel, which must match ESP-Now channel
+    initialize_esp_now(channel, responseAddress);
+    return;
+  }
+  else {
+    Serial.print("COMM FAILURE: Incoming packet rejected. ");
+    if(sizeof(struct_response) != response_len) Serial.printf("Expected size: %d. Actual size: %d\n", sizeof(struct_response), response_len);
+    else if(COMMUNICATIONS_SIGNATURE != response.signature) Serial.printf("Expected signature: %lu. Actual signature: %lu\n", COMMUNICATIONS_SIGNATURE, response.signature);
+    else if(COMMUNICATIONS_VERSION   != response.version)   Serial.printf("Expected version: %d. Actual version: %d\n", COMMUNICATIONS_VERSION, response.version);
+    else Serial.println("Coding error.\n");
+  }
+}
+
+
+// Listen for a broadcast discovery_message and respond.
+//
+void pair_with_controller() {
+  M5.Lcd.fillScreen(BG_COLOR);
+  M5.Lcd.drawCentreString("Waiting for Pairing", 80, 20, 2);
+  M5.Lcd.drawCentreString("on channel " + String(channel), 80, 40, 2);
+  while(!connected) {
+    process_pairing_response();
+    delay(500);
+  }
+}
+
+
+// Display the motor speed in the appropriate position
+// Speed is drawn in blue if stopped, green if forward
+// and red if backward. The speed is drawn closest to
+// the motor it describes.
+//
+void display_speed(uint8_t motor, int8_t speed) {
+  if(0 == speed) M5.Lcd.setTextColor(TFT_BLUE);
+  else M5.Lcd.setTextColor(0 < speed ? TFT_GREEN : TFT_RED);
+  switch(motor) {
+    case 0: M5.Lcd.fillRect(0, 64, 50, 16, TFT_BLACK);
+            M5.Lcd.drawCentreString(String(speed),  25, 64, 2);
+            break;
+    case 1: M5.Lcd.fillRect(0, 0, 50, 16, TFT_BLACK);
+            M5.Lcd.drawCentreString(String(speed),  25,  0, 2);
+            break;
+    case 2: M5.Lcd.fillRect(110, 64, 50, 16, TFT_BLACK);
+            M5.Lcd.drawCentreString(String(speed), 135, 64, 2);
+            break;
+    case 3: M5.Lcd.fillRect(110, 0, 50, 16, TFT_BLACK);
+            M5.Lcd.drawCentreString(String(speed), 135,  0, 2);
+            break;
+  }
 }
 
 
@@ -192,49 +212,24 @@ void test_and_handle_incoming_data() {
 }
 
 
-// Stop the robot, turn off motors, turn off lights, display full stop.
+// Display the mac address of the device, and if connected, of its paired device.
+// Also show the channel in use.
+// Red indicates no ESP-Now connection, Green indicates connection established.
 //
-void come_to_halt() {
-  BugCSetColor(0, 0);           // Turn off the NeoPixels on the front of the BugC
-  BugCSetAllSpeed(0, 0, 0, 0);  // Stop the motors
-  digitalWrite(LED_PIN, true);  // turn off the red LED
-  display_speed(0, 0);          // Display the speed of all four motors
-  display_speed(1, 0);
-  display_speed(2, 0);
-  display_speed(3, 0);
-}
-
-
-void process_pairing_response() {
-  data_ready = false;
-  data_valid = (sizeof(discovery_message) == response_len);  // In discovery phase until connected.
-  if(data_valid) data_valid = COMMUNICATIONS_SIGNATURE == response.signature &&
-                              COMMUNICATIONS_VERSION   == response.version;
-  if(data_valid) {
-    Serial.println("Incoming pairing packet validated.");
-    esp_err_t           result;
-    connected = true;
-    result = esp_now_send(broadcastAddress, (uint8_t *) &response, sizeof(struct_response));
-    Serial.printf("pairing send_response result = %d\n", result);
-    memcpy(controllerAddress, responseAddress, 6);    // This is who we will be talking to.
-    Serial.printf("%02x:%02x:%02x:%02x:%02x:%02x, channel %d\n", responseAddress[0], responseAddress[1], responseAddress[2], responseAddress[3], responseAddress[4], responseAddress[5], channel);
-    if (ESP_OK == esp_now_del_peer(broadcastAddress)) {   // We are finished with discovery
-      Serial.println("Deleted broadcast peer");
-    }
-    else {
-      Serial.println("Failed to delete broadcast peer");
-      return;
-    }
-    // Reinitialize WiFi with the new channel, which must match ESP-Now channel
-    initialize_esp_now(channel, responseAddress);
-    return;
-  }
-  else {
-    Serial.print("COMM FAILURE: Incoming packet rejected. ");
-    if(sizeof(struct_response) != response_len) Serial.printf("Expected size: %d. Actual size: %d\n", sizeof(struct_response), response_len);
-    else if(COMMUNICATIONS_SIGNATURE != response.signature) Serial.printf("Expected signature: %lu. Actual signature: %lu\n", COMMUNICATIONS_SIGNATURE, response.signature);
-    else if(COMMUNICATIONS_VERSION   != response.version)   Serial.printf("Expected version: %d. Actual version: %d\n", COMMUNICATIONS_VERSION, response.version);
-    else Serial.println("Coding error.\n");
+void print_mac_address(uint16_t color) {
+  M5.Lcd.setTextColor(color);
+  M5.Lcd.drawCentreString("BugNow", 80, 0, 2);
+  String mac = WiFi.macAddress();
+  mac.replace(":", " ");
+  mac = String("R ") + mac;
+  M5.Lcd.drawCentreString(mac, 80, 22, 2);
+  if(connected) {
+    char  buffer[32];
+    sprintf(buffer, "C %02X %02X %02X %02X %02X %02X", controllerAddress[0], controllerAddress[1],
+        controllerAddress[2], controllerAddress[3], controllerAddress[4], controllerAddress[5]);
+    M5.Lcd.drawCentreString(buffer, 80, 40, 2);
+    String chan = "Chan " + String(channel);
+    M5.Lcd.drawCentreString(chan, 80, 60, 2);
   }
 }
 
@@ -268,16 +263,16 @@ uint8_t select_comm_channel() {
 }
 
 
-// Listen for a broadcast discovery_message and respond.
+// Stop the robot, turn off motors, turn off lights, display full stop.
 //
-void pair_with_controller() {
-  M5.Lcd.fillScreen(BG_COLOR);
-  M5.Lcd.drawCentreString("Waiting for Pairing", 80, 20, 2);
-  M5.Lcd.drawCentreString("on channel " + String(channel), 80, 40, 2);
-  while(!connected) {
-    process_pairing_response();
-    delay(500);
-  }
+void come_to_halt() {
+  BugCSetColor(0, 0);           // Turn off the NeoPixels on the front of the BugC
+  BugCSetAllSpeed(0, 0, 0, 0);  // Stop the motors
+  digitalWrite(LED_PIN, true);  // turn off the red LED
+  display_speed(0, 0);          // Display the speed of all four motors
+  display_speed(1, 0);
+  display_speed(2, 0);
+  display_speed(3, 0);
 }
 
 
