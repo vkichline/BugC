@@ -35,6 +35,7 @@
 #define LED_PIN                           10
 #define BG_COLOR                          NAVY
 #define FG_COLOR                          LIGHTGREY
+#define AP_NAME                           "BugNowAP"
 
 struct_message      datagram;
 struct_response     response;
@@ -60,7 +61,9 @@ void print_mac_address(uint16_t color) {
   M5.Lcd.drawCentreString("BugC", 80, 0, 2);
   String mac = WiFi.macAddress();
   mac.replace(":", " ");
-  M5.Lcd.drawCentreString(mac, 80, 30, 2);
+  String chan = "Channel " + String(channel);
+  M5.Lcd.drawCentreString(mac, 80, 22, 2);
+  if(connected) M5.Lcd.drawCentreString(chan, 80, 44, 2);
 }
 
 
@@ -124,7 +127,10 @@ void send_response(response_status status) {
 
 // Set up ESP-Now. Return true if successful.
 //
-bool initialize_esp_now() {
+bool initialize_esp_now(uint8_t chan, uint8_t* mac_address) {
+  channel = chan;
+  WiFi.disconnect();
+  WiFi.softAP(AP_NAME, "", channel);
   WiFi.mode(WIFI_STA);
   if(ESP_OK != esp_now_init()) {
     Serial.println("Error initializing ESP-NOW");
@@ -133,14 +139,14 @@ bool initialize_esp_now() {
   esp_now_register_send_cb(on_data_sent);
   esp_now_register_recv_cb(on_data_received);
 
-  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+  memcpy(peerInfo.peer_addr, mac_address, 6);
   peerInfo.channel = channel;
   peerInfo.encrypt = false;
   if (ESP_OK == esp_now_add_peer(&peerInfo)) {
-    Serial.println("Added broadcast peer");
+    Serial.println("Added peer");
   }
   else {
-    Serial.println("Failed to add Broadcast peer");
+    Serial.println("Failed to add peer");
     return false;
   }
   return true;
@@ -223,17 +229,16 @@ void process_pairing_response() {
     result = esp_now_send(broadcastAddress, (uint8_t *) &response, sizeof(struct_response));
     Serial.printf("pairing send_response result = %d\n", result);
     memcpy(controllerAddress, responseAddress, 6);    // This is who we will be talking to.
-    memcpy(peerInfo.peer_addr, responseAddress, 6);   // Register as a peer
-    peerInfo.channel = channel;
-    peerInfo.encrypt = false;
     Serial.printf("%02x:%02x:%02x:%02x:%02x:%02x, channel %d\n", responseAddress[0], responseAddress[1], responseAddress[2], responseAddress[3], responseAddress[4], responseAddress[5], channel);
-    if (ESP_OK == esp_now_add_peer(&peerInfo)) {
-      Serial.println("Added controller peer");
+    if (ESP_OK == esp_now_del_peer(broadcastAddress)) {   // We are finished with discovery
+      Serial.println("Deleted broadcast peer");
     }
     else {
-      Serial.println("Failed to add controller peer");
+      Serial.println("Failed to delete broadcast peer");
+      return;
     }
-    esp_now_del_peer(broadcastAddress);   // We are finished with discovery
+    // Reinitialize WiFi with the new channel, which must match ESP-Now channel
+    initialize_esp_now(channel, responseAddress);
     return;
   }
   else {
@@ -250,10 +255,10 @@ void process_pairing_response() {
 //
 uint8_t select_comm_channel() {
   uint8_t chan  = random(13) + 1;
-  M5.Lcd.drawString("Channel", 8,  8, 1);
-  M5.Lcd.drawString("1 - 14",  8, 26, 1);
-  M5.Lcd.drawString("A = +",   8, 44, 1);
-  M5.Lcd.drawString("B = set", 8, 62, 1);
+  M5.Lcd.drawString("CHAN",    8,  4, 2);
+  M5.Lcd.drawString("1 - 14",  8, 28, 1);
+  M5.Lcd.drawString("A = +",   8, 46, 1);
+  M5.Lcd.drawString("B = Set", 8, 64, 1);
   M5.Lcd.setTextDatum(TR_DATUM);
   M5.Lcd.drawString(String(chan), 160, 2, 8);
 
@@ -291,17 +296,17 @@ void pair_with_controller() {
 // Standard Arduino setup function, called once before start of program.
 //
 void setup() {
-  M5.begin();                             // Gets the M5StickC library initialized
-  Wire.begin(0, 26, 400000);              // Need Wire to communicate with BugC
-  pinMode(LED_PIN, OUTPUT);               // Enables the internal LED as an output
-  digitalWrite(LED_PIN, true);            // Turn LED off
+  M5.begin();                                     // Gets the M5StickC library initialized
+  Wire.begin(0, 26, 400000);                      // Need Wire to communicate with BugC
+  pinMode(LED_PIN, OUTPUT);                       // Enables the internal LED as an output
+  digitalWrite(LED_PIN, true);                    // Turn LED off
   M5.Lcd.setTextColor(FG_COLOR, BG_COLOR);
   M5.Lcd.fillScreen(BG_COLOR);
-  M5.Axp.SetChargeCurrent(CURRENT_360MA); // Needed for charging the 750 mAh battery on the BugC
+  M5.Axp.SetChargeCurrent(CURRENT_360MA);         // Needed for charging the 750 mAh battery on the BugC
   M5.Lcd.setRotation(1);
-  channel = select_comm_channel();        // Let user identify what channel we'll be using
-  initialize_esp_now();                   // Get communications working
-  pair_with_controller();                 // Determine who we'll be working with
+  channel = select_comm_channel();                // Let user identify what channel we'll be using
+  initialize_esp_now(channel, broadcastAddress);  // Get communications working
+  pair_with_controller();                         // Determine who we'll be working with
   M5.Lcd.fillScreen(BLACK);
   print_mac_address(TFT_GREEN);
 }
