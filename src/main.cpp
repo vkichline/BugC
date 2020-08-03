@@ -30,21 +30,26 @@
 // Remove broadcast peer.
 // Go into obeyer mode.
 
-#define BATTERY_UPDATE_DELAY          30000
-#define LOW_BATTERY_VOLTAGE           3.7
-#define LED_PIN                       10
-#define BG_COLOR                      NAVY
-#define FG_COLOR                      LIGHTGREY
+#define BATTERY_UPDATE_DELAY              30000
+#define LOW_BATTERY_VOLTAGE               3.7
+#define LED_PIN                           10
+#define BG_COLOR                          NAVY
+#define FG_COLOR                          LIGHTGREY
 
-struct_message  datagram;
-struct_response response;
-uint8_t         channel               = 0;
-uint8_t         broadcastAddress[]    = BROADCAST_MAC_ADDRESS;
-uint8_t         controllerAddress[6]  = { 0 };
-bool            data_received         = false;
-bool            data_valid            = false;
-bool            connected             = false;
-unsigned long   lastBatteryUpdate     = -30000;
+struct_message      datagram;
+struct_response     response;
+discovery_message   discovery;
+esp_now_peer_info_t peerInfo;
+bool                data_ready            = false;
+uint8_t             response_len          = 0;
+uint8_t             channel               = 0;
+uint8_t             responseAddress[6]    = { 0 };
+uint8_t             broadcastAddress[]    = BROADCAST_MAC_ADDRESS;
+uint8_t             controllerAddress[6]  = { 0 };
+bool                data_received         = false;
+bool                data_valid            = false;
+bool                connected             = false;
+unsigned long       lastBatteryUpdate     = -30000;
 
 
 // Display the mac address on the screen in a diagnostic color
@@ -92,57 +97,19 @@ void display_speed(uint8_t motor, int8_t speed) {
 
 
 // Callback function that will be executed by ESP-Now when data is received.
-// Move the data into datagram storage and set data_received.
+// This is on a high-priority system thread. Do as little as possible.
 //
 void on_data_received(const uint8_t * mac, const uint8_t *incomingData, int len) {
   Serial.println("Incoming packet received.");
   if(connected) {
-    data_valid = (sizeof(struct_message) == len);     // Expecting a struct_message once connected
-  }
-  else {
-    data_valid = (sizeof(discovery_message) == len);  // In discovery phase until connected.
-  }
-  if(data_valid) data_valid = COMMUNICATIONS_SIGNATURE == ((struct_message*)incomingData)->signature &&
-                              COMMUNICATIONS_VERSION   == ((struct_message*)incomingData)->version;
-  if(data_valid) {
-    Serial.println("Incoming packet validated.");
-    data_received = true;
-    if(!connected) {
-      esp_now_peer_info_t peerInfo;
-      esp_err_t           result;
-      connected = true;
-      result = esp_now_send(broadcastAddress, (uint8_t *) &response, sizeof(struct_response));
-      Serial.printf("pairing send_response result = %d\n", result);
-      memcpy(controllerAddress, mac, 6);    // This is who we will be talking to.
-      memcpy(peerInfo.peer_addr, mac, 6);   // Register as a peer
-      peerInfo.channel = channel;
-      peerInfo.encrypt = false;
-      Serial.printf("%02x:%02x:%02x:%02x:%02x:%02x, channel %d\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], channel);
-      if (ESP_OK == esp_now_add_peer(&peerInfo)) {
-        Serial.println("Added controller peer");
-      }
-      else {
-        Serial.println("Failed to add controller peer");
-      }
-      esp_now_del_peer(broadcastAddress);   // We are finished with discovery
-      return;
-    }
     memcpy(&datagram, incomingData, sizeof(struct_message));
-    Serial.println("Received Packet:");
-    Serial.printf("speed_0: %d\n",      datagram.speed_0);
-    Serial.printf("speed_1: %d\n",      datagram.speed_0);
-    Serial.printf("speed_2: %d\n",      datagram.speed_0);
-    Serial.printf("speed_3: %d\n",      datagram.speed_0);
-    Serial.printf("color_left: %d\n",   datagram.color_left);
-    Serial.printf("color_right: %d\n",  datagram.color_right);
   }
   else {
-    Serial.print("COMM FAILURE: Incoming packet rejected. ");
-    if(sizeof(struct_message) != len) Serial.printf("Expected size: %d. Actual size: %d\n", connected ? sizeof(struct_message) : sizeof(discovery_message), len);
-    else if(COMMUNICATIONS_SIGNATURE != ((struct_message*)incomingData)->signature) Serial.printf("Expected signature: %lu. Actual signature: %lu\n", COMMUNICATIONS_SIGNATURE, ((struct_message*)incomingData)->signature);
-    else if(COMMUNICATIONS_VERSION != ((struct_message*)incomingData)->version) Serial.printf("Expected version: %d. Actual version: %d\n", COMMUNICATIONS_VERSION, ((struct_message*)incomingData)->version);
-    else Serial.println("Coding error.\n");
+    memcpy(&response, incomingData, sizeof(struct_response));
   }
+  memcpy(&responseAddress, mac, 6);
+  response_len  = len;
+  data_ready    = true;
 }
 
 
@@ -158,7 +125,6 @@ void send_response(response_status status) {
 // Set up ESP-Now. Return true if successful.
 //
 bool initialize_esp_now() {
-  esp_now_peer_info_t peerInfo;
   WiFi.mode(WIFI_STA);
   if(ESP_OK != esp_now_init()) {
     Serial.println("Error initializing ESP-NOW");
@@ -184,30 +150,36 @@ bool initialize_esp_now() {
 // See if valid data has been received, and if so set all data outputs (2 NeoPixels and 4 speeds)
 // Send a response indicating whether or not the data received was valid.
 //
-bool test_and_handle_incoming_data() {
-  if(data_received) {
-    data_received = false;                                      // clear the flag for next command
-    if(data_valid) {
-      send_response(RESP_NOERR);                                // let controller know that we accept the data
-      BugCSetColor(datagram.color_left, datagram.color_right);  // set the NeoPixels on the front of the BugC
-      BugCSetAllSpeed(datagram.speed_0, datagram.speed_1, datagram.speed_2, datagram.speed_3);
-      digitalWrite(LED_PIN, !datagram.button);                  // Turn on the LED if button is True
-      display_speed(0, datagram.speed_0);                       // Display the speed of all four motors
-      display_speed(1, datagram.speed_1);                       // close to the motors themselves
-      display_speed(2, datagram.speed_2);                       // (because layout and connection are fixed.)
-      display_speed(3, datagram.speed_3);                       // This assumes setRotation(1)
-      Serial.printf("color_left = %d\tcolor_right = %d\n", datagram.color_left, datagram.color_right);
-      Serial.printf("speed_0    = %d\tspeed_1     = %d\n", datagram.speed_0, datagram.speed_1);
-      Serial.printf("speed_2    = %d\tspeed_3     = %d\n", datagram.speed_2, datagram.speed_3);
-      Serial.printf("button     = %s\n", datagram.button ? "true" : "false");
-      return true;
-    }
-    else {
-      send_response(RESP_ERROR);                                // let controller know that we reject the data
-      return false;
-    }
+void test_and_handle_incoming_data() {
+  data_ready = false;
+  data_valid = (sizeof(struct_message) == response_len);
+  if(data_valid) data_valid = COMMUNICATIONS_SIGNATURE == response.signature &&
+                              COMMUNICATIONS_VERSION   == response.version;
+  if(data_valid) {
+    send_response(RESP_NOERR);                                // let controller know that we accept the data
+    BugCSetColor(datagram.color_left, datagram.color_right);  // set the NeoPixels on the front of the BugC
+    BugCSetAllSpeed(datagram.speed_0, datagram.speed_1, datagram.speed_2, datagram.speed_3);
+    digitalWrite(LED_PIN, !datagram.button);                  // Turn on the LED if button is True
+    display_speed(0, datagram.speed_0);                       // Display the speed of all four motors
+    display_speed(1, datagram.speed_1);                       // close to the motors themselves
+    display_speed(2, datagram.speed_2);                       // (because layout and connection are fixed.)
+    display_speed(3, datagram.speed_3);                       // This assumes setRotation(1)
+    Serial.println("Incoming control packet validated.");
+    Serial.printf("speed_0: %d\n",      datagram.speed_0);
+    Serial.printf("speed_1: %d\n",      datagram.speed_0);
+    Serial.printf("speed_2: %d\n",      datagram.speed_0);
+    Serial.printf("speed_3: %d\n",      datagram.speed_0);
+    Serial.printf("color_left: %d\n",   datagram.color_left);
+    Serial.printf("color_right: %d\n",  datagram.color_right);
+    Serial.printf("button     = %s\n", datagram.button ? "true" : "false");
   }
-  return false;
+  else {
+    Serial.print("COMM FAILURE: Incoming packet rejected. ");
+    if(sizeof(struct_message) != response_len) Serial.printf("Expected size: %d. Actual size: %d\n", sizeof(struct_message), response_len);
+    else if(COMMUNICATIONS_SIGNATURE != response.signature) Serial.printf("Expected signature: %lu. Actual signature: %lu\n", COMMUNICATIONS_SIGNATURE, response.signature);
+    else if(COMMUNICATIONS_VERSION   != response.version)   Serial.printf("Expected version: %d. Actual version: %d\n", COMMUNICATIONS_VERSION, response.version);
+    else Serial.println("Coding error.\n");
+  }
 }
 
 
@@ -236,6 +208,41 @@ void come_to_halt() {
   display_speed(1, 0);
   display_speed(2, 0);
   display_speed(3, 0);
+}
+
+
+void process_pairing_response() {
+  data_ready = false;
+  data_valid = (sizeof(discovery_message) == response_len);  // In discovery phase until connected.
+  if(data_valid) data_valid = COMMUNICATIONS_SIGNATURE == response.signature &&
+                              COMMUNICATIONS_VERSION   == response.version;
+  if(data_valid) {
+    Serial.println("Incoming pairing packet validated.");
+    esp_err_t           result;
+    connected = true;
+    result = esp_now_send(broadcastAddress, (uint8_t *) &response, sizeof(struct_response));
+    Serial.printf("pairing send_response result = %d\n", result);
+    memcpy(controllerAddress, responseAddress, 6);    // This is who we will be talking to.
+    memcpy(peerInfo.peer_addr, responseAddress, 6);   // Register as a peer
+    peerInfo.channel = channel;
+    peerInfo.encrypt = false;
+    Serial.printf("%02x:%02x:%02x:%02x:%02x:%02x, channel %d\n", responseAddress[0], responseAddress[1], responseAddress[2], responseAddress[3], responseAddress[4], responseAddress[5], channel);
+    if (ESP_OK == esp_now_add_peer(&peerInfo)) {
+      Serial.println("Added controller peer");
+    }
+    else {
+      Serial.println("Failed to add controller peer");
+    }
+    esp_now_del_peer(broadcastAddress);   // We are finished with discovery
+    return;
+  }
+  else {
+    Serial.print("COMM FAILURE: Incoming packet rejected. ");
+    if(sizeof(struct_response) != response_len) Serial.printf("Expected size: %d. Actual size: %d\n", sizeof(struct_response), response_len);
+    else if(COMMUNICATIONS_SIGNATURE != response.signature) Serial.printf("Expected signature: %lu. Actual signature: %lu\n", COMMUNICATIONS_SIGNATURE, response.signature);
+    else if(COMMUNICATIONS_VERSION   != response.version)   Serial.printf("Expected version: %d. Actual version: %d\n", COMMUNICATIONS_VERSION, response.version);
+    else Serial.println("Coding error.\n");
+  }
 }
 
 
@@ -275,6 +282,7 @@ void pair_with_controller() {
   M5.Lcd.drawCentreString("Waiting for Pairing", 80,  8, 2);
   M5.Lcd.drawCentreString("on channel " + String(channel), 80,  32, 2);
   while(!connected) {
+    process_pairing_response();
     delay(500);
   }
 }
@@ -294,6 +302,8 @@ void setup() {
   channel = select_comm_channel();        // Let user identify what channel we'll be using
   initialize_esp_now();                   // Get communications working
   pair_with_controller();                 // Determine who we'll be working with
+  M5.Lcd.fillScreen(BLACK);
+  print_mac_address(TFT_GREEN);
 }
 
 
