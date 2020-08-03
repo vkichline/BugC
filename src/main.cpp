@@ -30,27 +30,23 @@
 // Remove broadcast peer.
 // Go into obeyer mode.
 
-#define BATTERY_UPDATE_DELAY              30000
-#define LOW_BATTERY_VOLTAGE               3.7
-#define LED_PIN                           10
-#define BG_COLOR                          NAVY
-#define FG_COLOR                          LIGHTGREY
-#define AP_NAME                           "BugNowAP"
+#define LED_PIN     10
+#define BG_COLOR    NAVY
+#define FG_COLOR    LIGHTGREY
+#define AP_NAME     "BugNowAP"
 
 struct_message      datagram;
 struct_response     response;
 discovery_message   discovery;
 esp_now_peer_info_t peerInfo;
 bool                data_ready            = false;
+bool                data_valid            = false;
+bool                connected             = false;
 uint8_t             response_len          = 0;
 uint8_t             channel               = 0;
 uint8_t             responseAddress[6]    = { 0 };
 uint8_t             broadcastAddress[]    = BROADCAST_MAC_ADDRESS;
 uint8_t             controllerAddress[6]  = { 0 };
-bool                data_received         = false;
-bool                data_valid            = false;
-bool                connected             = false;
-unsigned long       lastBatteryUpdate     = -30000;
 
 
 // Display the mac address on the screen in a diagnostic color
@@ -58,12 +54,19 @@ unsigned long       lastBatteryUpdate     = -30000;
 //
 void print_mac_address(uint16_t color) {
   M5.Lcd.setTextColor(color);
-  M5.Lcd.drawCentreString("BugC", 80, 0, 2);
+  M5.Lcd.drawCentreString("BugNow", 80, 0, 2);
   String mac = WiFi.macAddress();
   mac.replace(":", " ");
-  String chan = "Channel " + String(channel);
+  mac = String("R ") + mac;
   M5.Lcd.drawCentreString(mac, 80, 22, 2);
-  if(connected) M5.Lcd.drawCentreString(chan, 80, 44, 2);
+  if(connected) {
+    char  buffer[32];
+    sprintf(buffer, "C %02X %02X %02X %02X %02X %02X", controllerAddress[0], controllerAddress[1],
+        controllerAddress[2], controllerAddress[3], controllerAddress[4], controllerAddress[5]);
+    M5.Lcd.drawCentreString(buffer, 80, 40, 2);
+    String chan = "Chan " + String(channel);
+    M5.Lcd.drawCentreString(chan, 80, 60, 2);
+  }
 }
 
 
@@ -189,21 +192,6 @@ void test_and_handle_incoming_data() {
 }
 
 
-// See if enough time has elapsed to update the battery voltage display.
-// If the voltage is OK, display in green. If dangerously low, display in red.
-//
-void test_and_display_battery_voltage() {
-  if(lastBatteryUpdate + BATTERY_UPDATE_DELAY < millis()) {
-    float vBat = M5.Axp.GetBatVoltage();
-    vBat = int(vBat * 10.0) / 10.0;
-    M5.Lcd.setTextColor(LOW_BATTERY_VOLTAGE < vBat ? TFT_GREEN : TFT_RED);
-    M5.Lcd.fillRect(65, 64, 50, 16, TFT_BLACK);
-    M5.Lcd.drawCentreString(String(vBat), 80,  64, 2);
-    lastBatteryUpdate = millis();
-  }
-}
-
-
 // Stop the robot, turn off motors, turn off lights, display full stop.
 //
 void come_to_halt() {
@@ -284,8 +272,8 @@ uint8_t select_comm_channel() {
 //
 void pair_with_controller() {
   M5.Lcd.fillScreen(BG_COLOR);
-  M5.Lcd.drawCentreString("Waiting for Pairing", 80,  8, 2);
-  M5.Lcd.drawCentreString("on channel " + String(channel), 80,  32, 2);
+  M5.Lcd.drawCentreString("Waiting for Pairing", 80, 20, 2);
+  M5.Lcd.drawCentreString("on channel " + String(channel), 80, 40, 2);
   while(!connected) {
     process_pairing_response();
     delay(500);
@@ -318,5 +306,4 @@ void loop() {
   M5.update();                            // So M5.BtnA.isPressed() works
   if(M5.BtnA.isPressed()) come_to_halt(); // In case the transmitter dies, pressing the button turns everything off.
   test_and_handle_incoming_data();        // Handle ESP-Now communications
-  test_and_display_battery_voltage();     // Display battery voltage on screen
 }
