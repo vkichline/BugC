@@ -9,23 +9,42 @@
 #include "M5StickC.h"
 #include "bugC.h"
 #include "BugCommunications.h"
-// M5StickCMacAddresses.h includes some defines, including a line like:
-// #define M5STICKC_MAC_ADDRESS_BUGC_CONTROLLER   {0xNN, 0xNN, 0xNN, 0xNN, 0xNN, 0xNN}
-// Replace the N's with the digits of your M5StickC's MAC Address (displayed on screen)
-// NEVER check your secrets into a source control manager!
-#include "../../Secrets/M5StickCMacAddresses.h"
 
-#define BATTERY_UPDATE_DELAY  30000
-#define LOW_BATTERY_VOLTAGE   3.7
-#define LED_PIN               10
+// The motors of the BugC are arrainged like:
+//   1      3
+//   0      2
+// ...where left is the front of the BugC
+
+// Ver 2: Automatic discovery. Secrets file is eliminated.
+// Controller:
+// When turned on, select a channel: 1 - 14. Default is random.
+// Set a special callback function to handle the pairing
+// Add a broadcast peer and broadcast a controller frame until ACK received.
+// Change the callback routine to operational callback
+// Remove broadcast peer.
+// Add the responder as a peer.
+// Go into controller mode.
+// Obeyer:
+// When turned on, select a channel: 1 - 14. Choose the same one as the Controller.
+// Add a broadcast peer and listen for controller frame until detected. Send ACK.
+// Remove broadcast peer.
+// Go into obeyer mode.
+
+#define BATTERY_UPDATE_DELAY          30000
+#define LOW_BATTERY_VOLTAGE           3.7
+#define LED_PIN                       10
+#define BG_COLOR                      NAVY
+#define FG_COLOR                      LIGHTGREY
 
 struct_message  datagram;
 struct_response response;
-uint8_t         conrollerAddress[]  = M5STICKC_MAC_ADDRESS_BUGC_CONTROLLER;    // The MAC address displayed by BugController
-bool            data_received       = false;
-bool            data_valid          = false;
-bool            connected           = false;
-unsigned long   lastBatteryUpdate   = -30000;
+uint8_t         channel               = 0;
+uint8_t         broadcastAddress[]    = BROADCAST_MAC_ADDRESS;
+uint8_t         controllerAddress[6]  = { 0 };
+bool            data_received         = false;
+bool            data_valid            = false;
+bool            connected             = false;
+unsigned long   lastBatteryUpdate     = -30000;
 
 
 // Display the mac address on the screen in a diagnostic color
@@ -77,15 +96,36 @@ void display_speed(uint8_t motor, int8_t speed) {
 //
 void on_data_received(const uint8_t * mac, const uint8_t *incomingData, int len) {
   Serial.println("Incoming packet received.");
-  data_valid = (sizeof(struct_message) == len);   // currently, validated by message size.
+  if(connected) {
+    data_valid = (sizeof(struct_message) == len);     // Expecting a struct_message once connected
+  }
+  else {
+    data_valid = (sizeof(discovery_message) == len);  // In discovery phase until connected.
+  }
   if(data_valid) data_valid = COMMUNICATIONS_SIGNATURE == ((struct_message*)incomingData)->signature &&
                               COMMUNICATIONS_VERSION   == ((struct_message*)incomingData)->version;
   if(data_valid) {
     Serial.println("Incoming packet validated.");
     data_received = true;
     if(!connected) {
+      esp_now_peer_info_t peerInfo;
+      esp_err_t           result;
       connected = true;
-      print_mac_address(TFT_GREEN); // change the displayed color from red to green to indicated connection
+      result = esp_now_send(broadcastAddress, (uint8_t *) &response, sizeof(struct_response));
+      Serial.printf("pairing send_response result = %d\n", result);
+      memcpy(controllerAddress, mac, 6);    // This is who we will be talking to.
+      memcpy(peerInfo.peer_addr, mac, 6);   // Register as a peer
+      peerInfo.channel = channel;
+      peerInfo.encrypt = false;
+      Serial.printf("%02x:%02x:%02x:%02x:%02x:%02x, channel %d\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], channel);
+      if (ESP_OK == esp_now_add_peer(&peerInfo)) {
+        Serial.println("Added controller peer");
+      }
+      else {
+        Serial.println("Failed to add controller peer");
+      }
+      esp_now_del_peer(broadcastAddress);   // We are finished with discovery
+      return;
     }
     memcpy(&datagram, incomingData, sizeof(struct_message));
     Serial.println("Received Packet:");
@@ -98,7 +138,7 @@ void on_data_received(const uint8_t * mac, const uint8_t *incomingData, int len)
   }
   else {
     Serial.print("COMM FAILURE: Incoming packet rejected. ");
-    if(sizeof(struct_message) != len) Serial.printf("Expected size: %d. Actual size: %d\n", sizeof(struct_message), len);
+    if(sizeof(struct_message) != len) Serial.printf("Expected size: %d. Actual size: %d\n", connected ? sizeof(struct_message) : sizeof(discovery_message), len);
     else if(COMMUNICATIONS_SIGNATURE != ((struct_message*)incomingData)->signature) Serial.printf("Expected signature: %lu. Actual signature: %lu\n", COMMUNICATIONS_SIGNATURE, ((struct_message*)incomingData)->signature);
     else if(COMMUNICATIONS_VERSION != ((struct_message*)incomingData)->version) Serial.printf("Expected version: %d. Actual version: %d\n", COMMUNICATIONS_VERSION, ((struct_message*)incomingData)->version);
     else Serial.println("Coding error.\n");
@@ -110,7 +150,7 @@ void on_data_received(const uint8_t * mac, const uint8_t *incomingData, int len)
 //
 void send_response(response_status status) {
   response.status = status;
-  esp_err_t result = esp_now_send(conrollerAddress, (uint8_t *) &response, sizeof(struct_response));
+  esp_err_t result = esp_now_send(controllerAddress, (uint8_t *) &response, sizeof(struct_response));
   Serial.printf("send_response result = %d\n", result);
 }
 
@@ -127,11 +167,14 @@ bool initialize_esp_now() {
   esp_now_register_send_cb(on_data_sent);
   esp_now_register_recv_cb(on_data_received);
 
-  memcpy(peerInfo.peer_addr, conrollerAddress, 6);
-  peerInfo.channel = 0;
+  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+  peerInfo.channel = channel;
   peerInfo.encrypt = false;
-    if (ESP_OK != esp_now_add_peer(&peerInfo)) {
-    Serial.println("Failed to add peer");
+  if (ESP_OK == esp_now_add_peer(&peerInfo)) {
+    Serial.println("Added broadcast peer");
+  }
+  else {
+    Serial.println("Failed to add Broadcast peer");
     return false;
   }
   return true;
@@ -196,17 +239,61 @@ void come_to_halt() {
 }
 
 
+// Select and return the channel that we're going to use for communications. This enables racing, etc.
+//
+uint8_t select_comm_channel() {
+  uint8_t chan  = random(13) + 1;
+  M5.Lcd.drawString("Channel", 8,  8, 1);
+  M5.Lcd.drawString("1 - 14",  8, 26, 1);
+  M5.Lcd.drawString("A = +",   8, 44, 1);
+  M5.Lcd.drawString("B = set", 8, 62, 1);
+  M5.Lcd.setTextDatum(TR_DATUM);
+  M5.Lcd.drawString(String(chan), 160, 2, 8);
+
+  // Before transmitting, select a channel
+  while(true) {
+    M5.update();
+    if(M5.BtnB.wasReleased()) break;  // EXIT THE LOOP BY PRESSING B
+    if(M5.BtnA.wasReleased()) {
+      chan++;
+      if(14 < chan) {
+        chan = 1;
+        M5.Lcd.fillRect(60, 2, 100, 80, BG_COLOR);
+      }
+      M5.Lcd.drawString(String(chan), 160, 2, 8);
+    }
+  }
+  M5.Lcd.setTextDatum(TL_DATUM);
+  return chan;
+}
+
+
+// Listen for a broadcast discovery_message and respond.
+//
+void pair_with_controller() {
+  M5.Lcd.fillScreen(BG_COLOR);
+  M5.Lcd.drawCentreString("Waiting for Pairing", 80,  8, 2);
+  M5.Lcd.drawCentreString("on channel " + String(channel), 80,  32, 2);
+  while(!connected) {
+    delay(500);
+  }
+}
+
+
 // Standard Arduino setup function, called once before start of program.
 //
 void setup() {
   M5.begin();                             // Gets the M5StickC library initialized
+  Wire.begin(0, 26, 400000);              // Need Wire to communicate with BugC
   pinMode(LED_PIN, OUTPUT);               // Enables the internal LED as an output
   digitalWrite(LED_PIN, true);            // Turn LED off
-  Wire.begin(0, 26, 400000);              // Need Wire to communicate with BugC
+  M5.Lcd.setTextColor(FG_COLOR, BG_COLOR);
+  M5.Lcd.fillScreen(BG_COLOR);
   M5.Axp.SetChargeCurrent(CURRENT_360MA); // Needed for charging the 750 mAh battery on the BugC
   M5.Lcd.setRotation(1);
-  print_mac_address(TFT_RED);             // Display address for convenience. Red indicates no connection yet.
+  channel = select_comm_channel();        // Let user identify what channel we'll be using
   initialize_esp_now();                   // Get communications working
+  pair_with_controller();                 // Determine who we'll be working with
 }
 
 
