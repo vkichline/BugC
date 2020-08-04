@@ -30,8 +30,9 @@
 
 struct_message      datagram;
 struct_response     response;
-discovery_message   discovery;
+struct_discovery   discovery;
 esp_now_peer_info_t peerInfo;
+bool                comp_mode             = false;    // Competition mode: manually select a channel
 bool                data_ready            = false;
 bool                data_valid            = false;
 bool                connected             = false;
@@ -108,7 +109,7 @@ void send_response(response_status status) {
 //
 void process_pairing_response() {
   data_ready = false;
-  data_valid = (sizeof(discovery_message) == response_len);  // In discovery phase until connected.
+  data_valid = (sizeof(struct_discovery) == response_len);  // In discovery phase until connected.
   if(data_valid) data_valid = COMMUNICATIONS_SIGNATURE == response.signature &&
                               COMMUNICATIONS_VERSION   == response.version;
   if(data_valid) {
@@ -138,12 +139,40 @@ void process_pairing_response() {
 }
 
 
-// Listen for a broadcast discovery_message and respond.
+// Display the mac address of the device, and if connected, of its paired device.
+// Also show the channel in use.
+// Red indicates no ESP-Now connection, Green indicates connection established.
+//
+void print_mac_address(uint16_t color) {
+  M5.Lcd.setTextColor(color);
+  M5.Lcd.drawCentreString("BugNow", 80, 0, 2);
+  String mac = WiFi.macAddress();
+  mac.replace(":", " ");
+  mac = String("R ") + mac;
+  M5.Lcd.drawCentreString(mac, 80, 22, 2);
+  String chan = "Chan " + String(channel);
+  M5.Lcd.drawCentreString(chan, 80, 60, 2);
+  if(connected) {
+    char  buffer[32];
+    sprintf(buffer, "C %02X %02X %02X %02X %02X %02X", controllerAddress[0], controllerAddress[1],
+        controllerAddress[2], controllerAddress[3], controllerAddress[4], controllerAddress[5]);
+    M5.Lcd.drawCentreString(buffer, 80, 40, 2);
+  }
+}
+
+
+// Listen for a broadcast struct_discovery and respond.
 //
 void pair_with_controller() {
-  M5.Lcd.fillScreen(BG_COLOR);
-  M5.Lcd.drawCentreString("Waiting for Pairing", 80, 20, 2);
-  M5.Lcd.drawCentreString("on channel " + String(channel), 80, 40, 2);
+  if(comp_mode) {
+    M5.Lcd.fillScreen(BG_COLOR);
+    M5.Lcd.drawCentreString("Waiting for Pairing", 80, 20, 2);
+    M5.Lcd.drawCentreString("on channel " + String(channel), 80, 40, 2);
+  }
+  else {
+    M5.Lcd.fillScreen(TFT_BLACK);
+    print_mac_address(TFT_RED);
+  }
   while(!connected) {
     process_pairing_response();
     delay(500);
@@ -212,31 +241,12 @@ void test_and_handle_incoming_data() {
 }
 
 
-// Display the mac address of the device, and if connected, of its paired device.
-// Also show the channel in use.
-// Red indicates no ESP-Now connection, Green indicates connection established.
-//
-void print_mac_address(uint16_t color) {
-  M5.Lcd.setTextColor(color);
-  M5.Lcd.drawCentreString("BugNow", 80, 0, 2);
-  String mac = WiFi.macAddress();
-  mac.replace(":", " ");
-  mac = String("R ") + mac;
-  M5.Lcd.drawCentreString(mac, 80, 22, 2);
-  if(connected) {
-    char  buffer[32];
-    sprintf(buffer, "C %02X %02X %02X %02X %02X %02X", controllerAddress[0], controllerAddress[1],
-        controllerAddress[2], controllerAddress[3], controllerAddress[4], controllerAddress[5]);
-    M5.Lcd.drawCentreString(buffer, 80, 40, 2);
-    String chan = "Chan " + String(channel);
-    M5.Lcd.drawCentreString(chan, 80, 60, 2);
-  }
-}
-
-
-// Select and return the channel that we're going to use for communications. This enables racing, etc.
+// If we're not in competition mode, simply return 1.
+// Else, select and return the channel that we're going to use for communications. This enables racing, etc.
 //
 uint8_t select_comm_channel() {
+  if(!comp_mode) return 1;
+
   uint8_t chan  = random(13) + 1;
   M5.Lcd.drawString("CHAN",    8,  4, 2);
   M5.Lcd.drawString("1 - 14",  8, 28, 1);
@@ -279,6 +289,9 @@ void come_to_halt() {
 // Standard Arduino setup function, called once before start of program.
 //
 void setup() {
+  if(digitalRead(BUTTON_A_PIN) == 0) {            // Test to see if we're in Competition Mode
+    comp_mode = true;                             // If so, user selects a channel
+  }                                               // By default, we use channel 1.
   M5.begin();                                     // Gets the M5StickC library initialized
   Wire.begin(0, 26, 400000);                      // Need Wire to communicate with BugC
   pinMode(LED_PIN, OUTPUT);                       // Enables the internal LED as an output
