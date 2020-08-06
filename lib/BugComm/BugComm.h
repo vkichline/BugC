@@ -28,6 +28,14 @@ enum BugComm_Status {
 };
 
 
+enum BugComm_PacketType {
+  PTYPE_NONE,
+  PTYPE_COMMAND,
+  PTYPE_RESPONSE,
+  PTYPE_DISCOVERY
+};
+
+
 typedef struct BugComm_Discovery {
   ulong     signature = BUGCOMM_SIGNATURE;
   uint16_t  version   = BUGCOMM_VERSION;
@@ -57,7 +65,9 @@ typedef struct BugComm_Response {
 class BugComm {
   public:
     static bool     initialize_esp_now(uint8_t chan, uint8_t* mac_address = broadcastAddress);
-    static void     process_pairing_response();
+    static void     send_discovery();
+    static void     process_pairing_response(bool selective = false);  // true for competition mode
+    static void     send_command(uint8_t x, uint8_t y, bool button);   // this takes x & y as +/- 128
     static void     send_response(BugComm_Status status);
     static uint32_t get_light_color(uint8_t pos);
     static uint8_t  get_motor_speed(uint8_t pos);
@@ -73,11 +83,15 @@ class BugComm {
     static    BugComm_Command     datagram;
     static    BugComm_Response    response;
     static    BugComm_Discovery   discovery;
+    static    BugComm_PacketType  packet_type;
     static    bool                data_ready;
     static    bool                data_valid;
     static    bool                connected;
     static    uint8_t             channel;  // 0 - 14.
     static    uint8_t             response_len;
+    static    int8_t              last_x;
+    static    int8_t              last_y;
+    static    bool                last_b;
     static    uint8_t             responseAddress[6];
     static    uint8_t             broadcastAddress[];
     static    uint8_t             peerAddress[6];
