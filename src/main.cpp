@@ -87,7 +87,7 @@ uint8_t select_comm_channel() {
 // Send a response indicating whether or not the data received was valid.
 //
 void handle_incoming_data() {
-  if(bug_comm.get_data_valid()) {
+  if(bug_comm.is_data_ready()) {
     bug_comm.clear_data_ready();
     bug_comm.send_response(RESP_NOERR);                   // let controller know that we accept the data
     bug.set_lights(bug_comm.get_light_color(0), bug_comm.get_light_color(1));  // set the NeoPixels on the front of the BugC
@@ -114,7 +114,7 @@ void pair_with_controller() {
     print_mac_address(TFT_RED);
   }
   while(!bug_comm.is_connected()) {
-    bug_comm.process_pairing_response();
+    bug_comm.process_discovery_response();
     delay(500);
   }
 }
@@ -134,6 +134,7 @@ void setup() {
   M5.Lcd.fillScreen(BG_COLOR);
   M5.Axp.SetChargeCurrent(CURRENT_360MA);             // Needed for charging the 750 mAh battery on the BugC
   M5.Lcd.setRotation(1);
+  bug_comm.begin(MODE_RECEIVER);                      // Establish the mode we run in
   bug_comm.initialize_esp_now(select_comm_channel()); // Get communications working
   pair_with_controller();                             // Determine who we'll be working with
   M5.Lcd.fillScreen(BLACK);
