@@ -88,8 +88,8 @@ uint8_t select_comm_channel() {
 //
 void handle_incoming_data() {
   if(bug_comm.is_data_ready()) {
+//Serial.printf("%3d %3d %3d %3d\n", bug_comm.get_motor_speed(0), bug_comm.get_motor_speed(1), bug_comm.get_motor_speed(2), bug_comm.get_motor_speed(3));
     bug_comm.clear_data_ready();
-    bug_comm.send_response(RESP_NOERR);                   // let controller know that we accept the data
     bug.set_lights(bug_comm.get_light_color(0), bug_comm.get_light_color(1));  // set the NeoPixels on the front of the BugC
     bug.set_all_speeds(bug_comm.get_motor_speed(0), bug_comm.get_motor_speed(1), bug_comm.get_motor_speed(2), bug_comm.get_motor_speed(3));
     digitalWrite(M5_LED, !bug_comm.get_button());         // Turn on the LED if button is True
@@ -134,8 +134,7 @@ void setup() {
   M5.Lcd.fillScreen(BG_COLOR);
   M5.Axp.SetChargeCurrent(CURRENT_360MA);             // Needed for charging the 750 mAh battery on the BugC
   M5.Lcd.setRotation(1);
-  bug_comm.begin(MODE_RECEIVER);                      // Establish the mode we run in
-  bug_comm.initialize_esp_now(select_comm_channel()); // Get communications working
+  bug_comm.begin(NOWCOMM_MODE_RECEIVER, select_comm_channel());   // Establish the mode AND CHANNEL we run in
   pair_with_controller();                             // Determine who we'll be working with
   M5.Lcd.fillScreen(BLACK);
   print_mac_address(TFT_GREEN);
